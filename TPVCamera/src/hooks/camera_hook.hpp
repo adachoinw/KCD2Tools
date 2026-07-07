@@ -27,6 +27,7 @@ namespace TPVCamera
     inline constexpr const char *k_zoom_in_binding = "camera_zoom_in";
     inline constexpr const char *k_zoom_out_binding = "camera_zoom_out";
     inline constexpr const char *k_orbit_hold_binding = "orbit_hold";
+    inline constexpr const char *k_free_cam_binding = "free_cam_toggle";
 
     /**
      * @brief Installs the third-person camera hooks.

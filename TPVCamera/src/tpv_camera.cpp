@@ -83,6 +83,21 @@ namespace TPVCamera
     }
 
     /**
+     * @brief Toggles the detached free cam on or off.
+     * @details Seeding position and orientation from the current camera state is done in the frustum
+     *          detour on the first active frame (render thread), not here (input thread), so the seed
+     *          always reads the matrix that was last actually rendered.  This toggle simply flips the
+     *          atomic flag the detour polls each frame.
+     */
+    static void free_cam_toggle()
+    {
+        CameraState &cam = camera_state();
+        const bool now_active = !cam.free_cam_active.load(std::memory_order_relaxed);
+        cam.free_cam_active.store(now_active, std::memory_order_relaxed);
+        DMK::Logger::get_instance().info("Free cam {}", now_active ? "ENABLED" : "DISABLED");
+    }
+
+    /**
      * @brief Resolves the game module base and size into TPVCamera::module_info().
      * @details Polls for the module for up to ~3 seconds because an ASI can attach
      *          fractionally before WHGame.dll finishes mapping.
@@ -258,6 +273,18 @@ namespace TPVCamera
                 DMK::Logger::get_instance().info("Orbit camera {}", new_state ? "ENABLED" : "DISABLED");
             },
             "F4,Gamepad_LB+Gamepad_LS");
+
+        // Detached free cam: press to toggle. Blocked while a UI is up (same gate as the other view keys).
+        // Default: F (configurable via FreeCamKey in the INI).
+        add_press(
+            "FreeCam", "FreeCamKey", "Free Cam Key", k_free_cam_binding,
+            []
+            {
+                if (is_ui_blocking_input())
+                    return;
+                free_cam_toggle();
+            },
+            "F");
 
         // Open/close the preset-manager overlay. Always allowed (it is the mod's own UI), so it can be
         // opened over a game menu; the camera keeps rendering live so preset edits are visible.

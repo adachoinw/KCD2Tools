@@ -2283,6 +2283,95 @@ namespace TPVCamera
     }
 
     /**
+     * @brief Seeds the free cam position and orientation from the current camera matrix.
+     * @details Called once on the first free-cam-active frame (render thread) to latch the current
+     *          rendered pose so the camera starts exactly where the view was — no jump.
+     *          Reads the camera's 3x4 matrix: translation = column 3; forward = column 1 (Y axis).
+     *          Yaw and pitch are extracted from the forward vector.
+     * @param camera The game view's embedded render camera (matrix at offset 0).
+     */
+    static void seed_free_cam_from_matrix(uintptr_t camera)
+    {
+        CameraState &cam = camera_state();
+        const GameStructures::Matrix34f *matrix = reinterpret_cast<const GameStructures::Matrix34f *>(camera);
+        // Translation is column 3 (m[row][3]).
+        cam.free_cam_pos_x = matrix->m[0][3];
+        cam.free_cam_pos_y = matrix->m[1][3];
+        cam.free_cam_pos_z = matrix->m[2][3];
+        // Forward (Y column): col1 = (m[0][1], m[1][1], m[2][1]).
+        const float fx = matrix->m[0][1];
+        const float fy = matrix->m[1][1];
+        const float fz = matrix->m[2][1];
+        // Yaw from horizontal forward; pitch from vertical component.
+        cam.free_cam_yaw = std::atan2(-fx, fy); // matches the engine's yaw convention
+        const float horiz = std::sqrt(fx * fx + fy * fy);
+        cam.free_cam_pitch = std::atan2(fz, horiz);
+    }
+
+    /**
+     * @brief Writes the free cam world pose into the camera matrix and advances movement.
+     * @details Polls WASD/Space/Ctrl for fly movement (device-agnostic virtual-key poll; the input
+     *          dispatch detour blocks game input while free cam is active so the engine never sees
+     *          these same key presses for player movement). Mouse look is accumulated by the input
+     *          dispatch detour into free_cam_yaw/pitch. The resulting 3x4 matrix is written in place
+     *          so the frustum builder computes cull planes from the free cam position.
+     * @param camera The game view's embedded render camera (matrix at offset 0).
+     * @param delta_time Seconds since the last game-view frame.
+     */
+    static void apply_free_cam_view(uintptr_t camera, float delta_time)
+    {
+        CameraState &cam = camera_state();
+        const LiveSettings &cfg = settings();
+
+        // Clamp pitch to avoid gimbal lock at the poles (±89°).
+        constexpr float k_pitch_limit = 1.5533f; // radians (~89 deg)
+        cam.free_cam_pitch = std::clamp(cam.free_cam_pitch, -k_pitch_limit, k_pitch_limit);
+
+        // Build the camera basis from yaw (about world Z) then pitch (about the resulting right axis).
+        // Convention: forward = (−sin yaw * cos pitch, cos yaw * cos pitch, sin pitch).
+        const float cy = std::cos(cam.free_cam_yaw);
+        const float sy = std::sin(cam.free_cam_yaw);
+        const float cp = std::cos(cam.free_cam_pitch);
+        const float sp = std::sin(cam.free_cam_pitch);
+
+        // Camera basis vectors (CryEngine column-vector convention: right=col0, forward=col1, up=col2).
+        const Vector3 fwd{-sy * cp, cy * cp, sp};
+        const Vector3 right{cy, sy, 0.0f}; // horizontal right (no pitch component)
+        // True up = cross(right, fwd) so the basis is orthonormal.
+        const Vector3 up = right.cross(fwd).normalized();
+
+        // WASD + Space/Ctrl fly movement. Only poll keys while the game window owns OS focus;
+        // GetAsyncKeyState reads physical key state regardless of focus, so without this check
+        // alt-tabbed typing would move the camera in the background.
+        const float speed = cfg.free_cam_speed.load(std::memory_order_relaxed);
+        const float move = speed * delta_time;
+        Vector3 pos{cam.free_cam_pos_x, cam.free_cam_pos_y, cam.free_cam_pos_z};
+        {
+            HWND fg = GetForegroundWindow();
+            DWORD fg_pid = 0;
+            if (fg) GetWindowThreadProcessId(fg, &fg_pid);
+            if (fg_pid == GetCurrentProcessId() && !is_game_menu_open())
+            {
+                if (GetAsyncKeyState('W') & 0x8000) { pos = pos + fwd * move; }
+                if (GetAsyncKeyState('S') & 0x8000) { pos = pos - fwd * move; }
+                if (GetAsyncKeyState('A') & 0x8000) { pos = pos - right * move; }
+                if (GetAsyncKeyState('D') & 0x8000) { pos = pos + right * move; }
+                if (GetAsyncKeyState(VK_SPACE)   & 0x8000) { pos.z += move; }
+                if (GetAsyncKeyState(VK_CONTROL) & 0x8000) { pos.z -= move; }
+            }
+        }
+        cam.free_cam_pos_x = pos.x;
+        cam.free_cam_pos_y = pos.y;
+        cam.free_cam_pos_z = pos.z;
+
+        // Write the 3x4 matrix: right in col0, forward in col1, up in col2, position in col3.
+        GameStructures::Matrix34f *matrix = reinterpret_cast<GameStructures::Matrix34f *>(camera);
+        matrix->m[0][0] = right.x;  matrix->m[0][1] = fwd.x;  matrix->m[0][2] = up.x;  matrix->m[0][3] = pos.x;
+        matrix->m[1][0] = right.y;  matrix->m[1][1] = fwd.y;  matrix->m[1][2] = up.y;  matrix->m[1][3] = pos.y;
+        matrix->m[2][0] = right.z;  matrix->m[2][1] = fwd.z;  matrix->m[2][2] = up.z;  matrix->m[2][3] = pos.z;
+    }
+
+    /**
      * @brief Gate + matrix-offset body for the frustum-builder detour. Separated from the SEH wrapper
      *        so that frame can hold C++ objects that need unwinding.
      * @details Cheapest exits first: the runtime toggle, then the CView vtable identity (a single
@@ -2404,7 +2493,8 @@ namespace TPVCamera
         // gate.
         // Ease the first-person <-> third-person blend toward the desired view so toggling (and UI
         // suppression) slides instead of snapping. ViewTransitionDuration 0 makes the switch instant.
-        const bool want_tpv = cam.applying.load(std::memory_order_relaxed) && should_apply_view();
+        // TPV offset removed: always stay in first-person. Free cam is the only detached view.
+        const bool want_tpv = false;
         const float view_dur = cfg.view_transition_duration.load(std::memory_order_relaxed);
         const float view_target = want_tpv ? 1.0f : 0.0f;
         if (view_dur > 1e-4f)
@@ -2418,22 +2508,32 @@ namespace TPVCamera
             cam.view_blend = view_target;
         }
 
+        // Free cam runs regardless of TPV state — check it before the FPV early-return below.
+        static bool s_free_cam_seeded = false;
+        if (cam.free_cam_active.load(std::memory_order_relaxed))
+        {
+            if (!s_free_cam_seeded)
+            {
+                seed_free_cam_from_matrix(camera);
+                s_free_cam_seeded = true;
+                DMK::Logger::get_instance().info("Free cam seeded at ({:.2f}, {:.2f}, {:.2f})",
+                                                 cam.free_cam_pos_x, cam.free_cam_pos_y, cam.free_cam_pos_z);
+            }
+            apply_free_cam_view(camera, delta_time);
+            return;
+        }
+        s_free_cam_seeded = false;
+
         // The offset is rendered while heading TO or holding third person, so the ease-OUT renders too.
         const bool offset_engaged = want_tpv || cam.view_blend > 1e-3f;
         s_offset_active.store(offset_engaged, std::memory_order_relaxed);
         reassert_head_visibility(offset_engaged);
 
-        // Edge tracker for the disengage cleanup below: true while the offset is rendering, so the cleanup runs
-        // ONCE on the third-person -> first-person transition, not every first-person frame.
         static bool s_orbit_was_engaged = false;
         if (!offset_engaged)
         {
             if (s_orbit_was_engaged)
             {
-                // Just left third person (toggled to FPV, or a state suppressed the offset). Drop the orbit
-                // run-state so re-engaging is fresh: clear the move re-arm latch and force-clear any
-                // movement-input latch the game may have stranded on an action-map swap. Edge-gated so a key
-                // held in first person does not spam the reset/log every frame.
                 cam.orbit_move_armed = false;
                 const float stranded = player_onaction_reset();
                 if (stranded > k_orbit_move_input_stop)
@@ -2445,18 +2545,15 @@ namespace TPVCamera
             }
             cam.collision_valid = false;
             cam.collision_hold_timer = 0.0f;
-            // First person (or suppressed): the camera is the eye, so the interaction hook must NOT redirect.
             interaction_aim_pose().invalidate();
             cam.orbit_level_blend = 0.0f;
-            cam.orbit_render_valid =
-                false; // next engaged frame snaps the orbit low-pass instead of easing across the gap
-            cam.orbit_steer_valid = false; // and the continuous-align steer low-pass
-            cam.eye_sync_valid = false;    // and the dynamic eye-height low-pass
-            cam.fov_ease_valid = false;    // and the per-preset FOV override ease
-            cam.basis_quat_valid = false;  // and the aim-basis low-pass
+            cam.orbit_render_valid = false;
+            cam.orbit_steer_valid = false;
+            cam.eye_sync_valid = false;
+            cam.fov_ease_valid = false;
+            cam.basis_quat_valid = false;
             cam.orbit_moving = false;
             cam.orbit_target_valid = false;
-            // Back to first person: the next engaged frame should snap the preset, not ease across the gap.
             Presets::reset_transition();
             return;
         }
@@ -2541,6 +2638,63 @@ namespace TPVCamera
     [[nodiscard]] static bool orbit_capture_and_decide(uintptr_t input_event)
     {
         CameraState &cam = camera_state();
+
+        // Free cam: active independent of TPV/FPV state. While on, capture mouse look into
+        // free_cam_yaw/pitch and block game input so Henry is frozen. Escape and tilde pass
+        // through so the pause menu and console work. Input is only blocked while this process
+        // owns OS focus — alt-tabbed input is never captured.
+        if (cam.free_cam_active.load(std::memory_order_relaxed))
+        {
+            // Focus check: if the foreground window belongs to another process, don't intercept.
+            {
+                HWND fg = GetForegroundWindow();
+                DWORD fg_pid = 0;
+                if (fg) GetWindowThreadProcessId(fg, &fg_pid);
+                if (fg_pid != GetCurrentProcessId())
+                    return false;
+            }
+
+            if (input_event == 0 || !DMK::Memory::plausible_userspace_ptr(input_event))
+                return false;
+
+            const int32_t type = *reinterpret_cast<const int32_t *>(input_event + Constants::INPUT_EVENT_TYPE_OFFSET);
+            const int32_t id   = *reinterpret_cast<const int32_t *>(input_event + Constants::INPUT_EVENT_ID_OFFSET);
+
+            // Capture mouse look deltas — but not while the menu is open (game is paused).
+            if (!is_game_menu_open() &&
+                type == Constants::MOUSE_INPUT_TYPE_ID &&
+                (id == Constants::INPUT_LOOK_YAW_EVENT_ID || id == Constants::INPUT_LOOK_PITCH_EVENT_ID))
+            {
+                const float value = *reinterpret_cast<const float *>(input_event + Constants::INPUT_EVENT_VALUE_OFFSET);
+                const float sens  = settings().free_cam_sensitivity.load(std::memory_order_relaxed);
+                if (id == Constants::INPUT_LOOK_YAW_EVENT_ID)
+                    cam.free_cam_yaw   -= value * sens * 0.003f;
+                else
+                    cam.free_cam_pitch -= value * sens * 0.003f;
+            }
+
+            // Check keyName string (SInputEvent+0x08 = const char* keyName).
+            // Patch-proof: name is stable even if key IDs change between builds.
+            constexpr ptrdiff_t k_keyname_ptr_offset = 0x08;
+            const auto kn_addr = DMK::Memory::seh_read<uintptr_t>(input_event + k_keyname_ptr_offset);
+            if (kn_addr && DMK::Memory::plausible_userspace_ptr(*kn_addr))
+            {
+                const char *name = reinterpret_cast<const char *>(*kn_addr);
+
+                // Escape: pass through so the game pauses; free cam stays active.
+                // Tilde/grave: pass through so console works.
+                if (_stricmp(name, "escape")      == 0 ||
+                    _stricmp(name, "tilde")       == 0 ||
+                    _stricmp(name, "apostrophe")  == 0)
+                {
+                    return false;
+                }
+            }
+
+            // Block everything else — Henry stays frozen.
+            return true;
+        }
+
         // Gate on the offset's effective active state (so free-look also works when a forced-TPV state
         // turned the offset on without the manual toggle), the orbit toggle, the cursor-shown flag (so a
         // UI being up holds the orbit instead of letting cursor motion turn it), and the shared UI gate

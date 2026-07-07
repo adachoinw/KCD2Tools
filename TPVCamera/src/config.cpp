@@ -122,6 +122,12 @@ namespace TPVCamera
         // switching presets on a state edge.
         DMK::Config::register_atomic<float>("Presets", "PresetBlendSpeed", "Preset Blend Speed", s.preset_blend_speed,
                                             8.0f);
+
+        // Detached free cam. FreeCamSpeed is the fly speed in m/s; FreeCamSensitivity is the mouse
+        // sensitivity multiplier (negative inverts the look axis).
+        DMK::Config::register_atomic<float>("FreeCam", "FreeCamSpeed", "Free Cam Speed", s.free_cam_speed, 3.0f);
+        DMK::Config::register_atomic<float>("FreeCam", "FreeCamSensitivity", "Free Cam Sensitivity",
+                                            s.free_cam_sensitivity, 1.0f);
     }
 
 } // namespace TPVCamera

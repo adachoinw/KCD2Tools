@@ -9,7 +9,7 @@
     {
       "name": "msvc-release",
       "displayName": "MSVC Release (single ASI)",
-      "generator": "Visual Studio 17 2022",
+      "generator": "Visual Studio 18 2026",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build/release-msvc",
       "cacheVariables": {
@@ -20,7 +20,7 @@
     {
       "name": "msvc-dev",
       "displayName": "MSVC Dev (two-DLL hot-reload)",
-      "generator": "Visual Studio 17 2022",
+      "generator": "Visual Studio 18 2026",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build/dev-msvc",
       "cacheVariables": {

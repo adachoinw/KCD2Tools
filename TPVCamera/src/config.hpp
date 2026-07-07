@@ -187,6 +187,12 @@ namespace TPVCamera
         // the heal runs (not a hot path); clamped to the DMK maximum. Larger tolerates a bigger insertion at
         // a slightly higher risk of a wrong heal onto a same-typed neighbour. Not for normal users to touch.
         std::atomic<int> self_heal_window{0x100};
+
+        // Detached free cam settings.
+        // FreeCamSpeed: fly speed in metres per second (WASD movement; default 10).
+        // FreeCamSensitivity: mouse sensitivity multiplier for free cam look (default 1.0; negative inverts).
+        std::atomic<float> free_cam_speed{3.0f};
+        std::atomic<float> free_cam_sensitivity{1.0f};
     };
 
     /** @brief Returns the process-wide live (atomic) settings. */

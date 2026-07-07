@@ -206,6 +206,18 @@ namespace TPVCamera
         float basis_quat_z{0.0f};
         float basis_quat_w{1.0f};
         bool basis_quat_valid{false};
+
+        // Detached free cam. Written by the hotkey toggle (input thread) and read by the frustum
+        // detour (render thread), so free_cam_active is atomic. The position and angles are render-thread
+        // only (written and read exclusively in the frustum detour), so they need no synchronization.
+        // free_cam_pos: world position of the fly camera.
+        // free_cam_yaw/pitch: orientation in radians (yaw = rotation about world Z, pitch = elevation).
+        std::atomic<bool> free_cam_active{false};
+        float free_cam_pos_x{0.0f};
+        float free_cam_pos_y{0.0f};
+        float free_cam_pos_z{0.0f};
+        float free_cam_yaw{0.0f};   // radians; 0 = +Y forward
+        float free_cam_pitch{0.0f}; // radians; clamped to (-π/2+ε, π/2-ε)
     };
 
     /**
