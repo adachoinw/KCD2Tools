@@ -94,6 +94,8 @@ namespace TPVCamera
         CameraState &cam = camera_state();
         const bool now_active = !cam.free_cam_active.load(std::memory_order_relaxed);
         cam.free_cam_active.store(now_active, std::memory_order_relaxed);
+        if (!now_active)
+            cam.free_cam_frozen.store(false, std::memory_order_relaxed);
         DMK::Logger::get_instance().info("Free cam {}", now_active ? "ENABLED" : "DISABLED");
     }
 
@@ -285,6 +287,24 @@ namespace TPVCamera
                 free_cam_toggle();
             },
             "F");
+
+        // Freeze free cam: toggle. While frozen, mouse look and WASD/Space/Ctrl fly movement are both
+        // ignored, so the camera holds its exact pose (e.g. for a steady screenshot). FreeCamKey still
+        // exits free cam while frozen, so this can never strand the player. No default: opt-in only.
+        add_press(
+            "FreeCam", "FreeCamFreezeKey", "Free Cam Freeze Key", "free_cam_freeze",
+            []
+            {
+                if (is_ui_blocking_input())
+                    return;
+                CameraState &cam = camera_state();
+                if (!cam.free_cam_active.load())
+                    return;
+                const bool new_state = !cam.free_cam_frozen.load();
+                cam.free_cam_frozen.store(new_state);
+                DMK::Logger::get_instance().info("Free cam {}", new_state ? "FROZEN" : "UNFROZEN");
+            },
+            "");
 
         // Open/close the preset-manager overlay. Always allowed (it is the mod's own UI), so it can be
         // opened over a game menu; the camera keeps rendering live so preset edits are visible.

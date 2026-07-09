@@ -218,6 +218,12 @@ namespace TPVCamera
         float free_cam_pos_z{0.0f};
         float free_cam_yaw{0.0f};   // radians; 0 = +Y forward
         float free_cam_pitch{0.0f}; // radians; clamped to (-π/2+ε, π/2-ε)
+
+        // Freeze toggle: while true, free cam ignores mouse look and WASD/Space/Ctrl fly movement, so
+        // the camera holds its pose (e.g. for a steady screenshot). The FreeCamKey exit toggle still
+        // works while frozen, so freezing can never strand the player in free cam. Input thread writes,
+        // render thread reads, so this needs the same atomicity as free_cam_active.
+        std::atomic<bool> free_cam_frozen{false};
     };
 
     /**

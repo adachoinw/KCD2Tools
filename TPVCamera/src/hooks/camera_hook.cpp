@@ -2342,10 +2342,12 @@ namespace TPVCamera
 
         // WASD + Space/Ctrl fly movement. Only poll keys while the game window owns OS focus;
         // GetAsyncKeyState reads physical key state regardless of focus, so without this check
-        // alt-tabbed typing would move the camera in the background.
+        // alt-tabbed typing would move the camera in the background. Skipped entirely while frozen so
+        // the camera holds its exact pose.
         const float speed = cfg.free_cam_speed.load(std::memory_order_relaxed);
         const float move = speed * delta_time;
         Vector3 pos{cam.free_cam_pos_x, cam.free_cam_pos_y, cam.free_cam_pos_z};
+        if (!cam.free_cam_frozen.load(std::memory_order_relaxed))
         {
             HWND fg = GetForegroundWindow();
             DWORD fg_pid = 0;
@@ -2660,8 +2662,9 @@ namespace TPVCamera
             const int32_t type = *reinterpret_cast<const int32_t *>(input_event + Constants::INPUT_EVENT_TYPE_OFFSET);
             const int32_t id   = *reinterpret_cast<const int32_t *>(input_event + Constants::INPUT_EVENT_ID_OFFSET);
 
-            // Capture mouse look deltas — but not while the menu is open (game is paused).
-            if (!is_game_menu_open() &&
+            // Capture mouse look deltas — but not while the menu is open (game is paused) or frozen
+            // (the camera pose is held steady; see free_cam_frozen).
+            if (!is_game_menu_open() && !cam.free_cam_frozen.load(std::memory_order_relaxed) &&
                 type == Constants::MOUSE_INPUT_TYPE_ID &&
                 (id == Constants::INPUT_LOOK_YAW_EVENT_ID || id == Constants::INPUT_LOOK_PITCH_EVENT_ID))
             {
